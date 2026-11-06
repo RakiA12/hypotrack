@@ -35,8 +35,10 @@ This creates:
 | Path | Purpose |
 | --- | --- |
 | `.exps/config.yaml` | cluster host, remote paths, metrics glob, default metrics, rsync excludes |
-| `.exps/hypotheses/` | one YAML per hypothesis (`H1.yaml`, `H1.1.yaml`, …) |
-| `.exps/experiments/exp-NNN/` | `meta.yaml` (tool-written), `notes.md` (humans and agents), `results/` (pulled, gitignored) |
+| `.exps/hypotheses.yaml` | metadata of every hypothesis in one file, keyed by id: parent, title, status, dates, evidence |
+| `.exps/hypotheses/` | one Markdown per hypothesis (`H1.1.md`): statement, rationale, conclusion |
+| `.exps/experiments.yaml` | metadata of every experiment in one file, keyed by id: hypothesis, title, status, code, submit, runs, summary |
+| `.exps/experiments/exp-NNN/` | `notes.md` (humans and agents), `submit.log`, `results/` (pulled, gitignored) |
 | `.claude/skills/hypotrack/SKILL.md` | the Claude Code skill explaining the workflow |
 | git remote `cluster` | `ssh://hpc/~/proj/repo`, receives `refs/exps/*` |
 
@@ -125,7 +127,7 @@ only been exercised against mocks. Checklist for the first real cycle:
    `Submitted batch job N` once per job. If one `sbatch` runs several Hydra jobs (job array),
    `pull` maps every run dir to that single job id and warns.
 3. `hypx run exp-001 -- <submit command>`; check `.exps/experiments/exp-001/submit.log` and
-   `meta.yaml` `runs[]`.
+   the `runs[]` of `exp-001` in `.exps/experiments.yaml`.
 4. `hypx status`, then `hypx pull exp-001 --include-logs`. If Slurm logs are not found, set
    `slurm_log_pattern` in `config.yaml` (relative to the worktree, `{job_id}` and `{exp_id}` are
    substituted; an absolute or `~` path is used as-is).

@@ -1,4 +1,4 @@
-"""Hypothesis / Experiment / Run data model and YAML (de)serialization."""
+"""Hypothesis / Experiment / Run data model, YAML (de)serialization and the hypothesis Markdown body."""
 
 from __future__ import annotations
 
@@ -84,7 +84,8 @@ class Hypothesis:
     rationale: str = ""
     conclusion: str = ""
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_meta_dict(self) -> dict[str, Any]:
+        """Structured part only: what goes into H1.yaml."""
         return {
             "id": self.id,
             "parent": self.parent,
@@ -93,10 +94,13 @@ class Hypothesis:
             "created": self.created,
             "concluded": self.concluded,
             "evidence": list(self.evidence),
-            "statement": self.statement,
-            "rationale": self.rationale,
-            "conclusion": self.conclusion,
         }
+
+    def to_dict(self) -> dict[str, Any]:
+        """Everything, for --json output."""
+        d = self.to_meta_dict()
+        d.update({"statement": self.statement, "rationale": self.rationale, "conclusion": self.conclusion})
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Hypothesis":
@@ -114,11 +118,109 @@ class Hypothesis:
         )
 
     def to_yaml(self) -> str:
-        return dump_yaml(self.to_dict())
+        """H1.yaml: metadata only. The prose lives in H1.md (see to_markdown)."""
+        return dump_yaml(self.to_meta_dict())
 
     @classmethod
     def from_yaml(cls, text: str) -> "Hypothesis":
+        """Also accepts the legacy single-file layout where statement/rationale/conclusion sat in the YAML."""
         return cls.from_dict(load_yaml(text) or {})
+
+    def to_markdown(self, existing: str | None = None) -> str:
+        """H1.md: `# <id>: <title>` plus one `## ` section per body field.
+
+        When `existing` is given, its other sections and their order are preserved; only the
+        known sections are replaced (missing ones are appended).
+        """
+        return render_hypothesis_markdown(self, existing)
+
+    def apply_markdown(self, text: str) -> None:
+        fields = parse_hypothesis_markdown(text)
+        for name in HYP_BODY_SECTIONS:
+            if name in fields:
+                setattr(self, name, fields[name])
+
+
+# Sections of H1.md that map to Hypothesis fields (heading text, case-insensitive).
+HYP_BODY_SECTIONS = ("statement", "rationale", "conclusion")
+
+
+def split_markdown_sections(text: str) -> tuple[list[str], list[tuple[str, str]]]:
+    """Return (preamble lines before the first `## `, [(heading, body), ...]).
+
+    `## ` inside a fenced code block (``` or ~~~) is not a heading.
+    """
+    preamble: list[str] = []
+    sections: list[tuple[str, str]] = []
+    heading: str | None = None
+    body: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if fence is None and (stripped.startswith("```") or stripped.startswith("~~~")):
+            fence = stripped[:3]
+        elif fence is not None and stripped.startswith(fence):
+            fence = None
+        if fence is None and line.startswith("## "):
+            if heading is not None:
+                sections.append((heading, _trim_blank_lines(body)))
+            heading = line[3:].strip()
+            body = []
+        elif heading is None:
+            preamble.append(line)
+        else:
+            body.append(line)
+    if heading is not None:
+        sections.append((heading, _trim_blank_lines(body)))
+    return preamble, sections
+
+
+def _trim_blank_lines(lines: list[str]) -> str:
+    """Join lines, dropping leading/trailing blank lines but keeping indentation (unlike str.strip())."""
+    start, end = 0, len(lines)
+    while start < end and not lines[start].strip():
+        start += 1
+    while end > start and not lines[end - 1].strip():
+        end -= 1
+    return "\n".join(ln.rstrip() for ln in lines[start:end])
+
+
+def parse_hypothesis_markdown(text: str) -> dict[str, str]:
+    """{field: body} for the known sections found in an H*.md file."""
+    _, sections = split_markdown_sections(text)
+    out: dict[str, str] = {}
+    for heading, body in sections:
+        key = heading.strip().lower()
+        if key in HYP_BODY_SECTIONS and key not in out:
+            out[key] = body  # first occurrence wins; render_hypothesis_markdown keeps later duplicates verbatim
+    return out
+
+
+def render_hypothesis_markdown(h: Hypothesis, existing: str | None = None) -> str:
+    values = {name: _trim_blank_lines(getattr(h, name).splitlines()) for name in HYP_BODY_SECTIONS}
+    preamble, sections = split_markdown_sections(existing or "")
+    # Keep anything the user wrote between the title and the first section; the title itself is regenerated.
+    intro = [ln for i, ln in enumerate(preamble) if not (i == 0 and ln.startswith("# "))]
+    intro_text = "\n".join(intro).strip()
+    lines = [f"# {h.id}: {h.title}"]
+    if intro_text:
+        lines += ["", intro_text]
+
+    def section(heading: str, body: str) -> list[str]:
+        return ["", f"## {heading}", "", body] if body else ["", f"## {heading}"]
+
+    seen: set[str] = set()
+    for heading, body in sections:
+        key = heading.strip().lower()
+        if key in HYP_BODY_SECTIONS and key not in seen:
+            seen.add(key)
+            lines += section(heading, values[key])  # keep the user's heading spelling
+        else:
+            lines += section(heading, body)  # unknown section, or a duplicate known one: kept verbatim
+    for name in HYP_BODY_SECTIONS:
+        if name not in seen:
+            lines += section(name.capitalize(), values[name])
+    return "\n".join(lines).rstrip() + "\n"
 
 
 # ----------------------------------------------------------------------------

@@ -109,7 +109,7 @@ def run_results_dir(results_dir: Path, subdir: str | None) -> Path | None:
 
 
 def summarize_experiment(exp: Experiment, results_dir: Path, cfg: Config) -> dict[str, Any]:
-    """Build meta.yaml `summary`: per-run last/best per metric and the experiment-level best per metric."""
+    """Build the experiment `summary` (stored in experiments.yaml): per-run last/best per metric and the experiment-level best per metric."""
     step_key = cfg.metrics_step_key
     per_run: dict[str, dict[str, Any]] = {}
     per_run_records: dict[str, list[dict[str, Any]]] = {}

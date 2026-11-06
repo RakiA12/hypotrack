@@ -25,11 +25,23 @@ class Paths:
         return self.exps / "config.yaml"
 
     @property
+    def hyp_index(self) -> Path:
+        """hypotheses.yaml: metadata of every hypothesis in one file, keyed by id (tool-written)."""
+        return self.exps / "hypotheses.yaml"
+
+    @property
     def hypotheses(self) -> Path:
+        """hypotheses/H1.1.md: hypothesis prose (statement, rationale, conclusion)."""
         return self.exps / "hypotheses"
 
     @property
+    def exp_index(self) -> Path:
+        """experiments.yaml: metadata of every experiment in one file, keyed by id (tool-written)."""
+        return self.exps / "experiments.yaml"
+
+    @property
     def experiments(self) -> Path:
+        """experiments/exp-001/: notes.md, submit.log and pulled results/ of one experiment."""
         return self.exps / "experiments"
 
     @property

@@ -36,6 +36,10 @@ def test_full_local_cycle(in_repo, tmp_path, monkeypatch):
 
     r = run("hyp", "new", "--title", "root", "--body", "root statement")
     assert "created H1" in r.output
+    assert "- body: .exps/hypotheses/H1.md" in r.output
+    assert "root statement" in (in_repo / ".exps/hypotheses/H1.md").read_text()
+    assert "statement" not in (in_repo / ".exps/hypotheses.yaml").read_text()
+    assert "- meta: .exps/hypotheses.yaml" in r.output
     r = run("hyp", "new", "--parent", "H1", "--title", "leaf")
     assert "created H1.1" in r.output
     r = run("exp", "new", "--hyp", "H1.1", "--title", "first", "--body", "because")
@@ -55,6 +59,8 @@ def test_full_local_cycle(in_repo, tmp_path, monkeypatch):
 
     r = run("hyp", "conclude", "H1.1", "--status", "supported", "--evidence", "exp-001", "--body", "done")
     assert "H1.1 -> supported" in r.output
+    assert "## Conclusion\n\ndone" in (in_repo / ".exps/hypotheses/H1.1.md").read_text()
+    assert "- files: .exps/hypotheses.yaml, .exps/hypotheses/H1.1.md" in run("hyp", "show", "H1.1").output
     tree = run("hyp", "tree").output
     assert "- H1.1 [supported] leaf (2 exps) — done" in tree
     assert json.loads(run("hyp", "tree", "--json").output)[1]["status"] == "supported"

@@ -163,8 +163,12 @@ def hyp_new(
     c = load_ctx()
     statement = read_body(body).strip()
     hyp = c.store.new_hypothesis(title, parent=parent, statement=statement, rationale=rationale.strip())
-    path = c.paths.rel(c.store._hyp_path(hyp.id))
-    emit(f"created {hyp.id}: {hyp.title}\n- file: {path}", {"id": hyp.id, "title": hyp.title, "parent": hyp.parent, "file": path}, as_json)
+    files = [c.paths.rel(p) for p in c.store.hyp_files(hyp.id)]
+    emit(
+        f"created {hyp.id}: {hyp.title}\n- meta: {files[0]}\n- body: {files[1]}",
+        {"id": hyp.id, "title": hyp.title, "parent": hyp.parent, "file": files[1], "files": files},
+        as_json,
+    )
 
 
 @hyp_app.command("tree")
@@ -191,7 +195,8 @@ def hyp_show(hyp_id: str = typer.Argument(...), as_json: bool = JsonOpt) -> None
     exps = c.store.experiments_for(hyp_id)
     data = h.to_dict()
     data["experiments"] = [e.id for e in exps]
-    emit(hyp_md(h, exps), data, as_json)
+    data["files"] = [c.paths.rel(p) for p in c.store.hyp_files(hyp_id)]
+    emit(hyp_md(h, exps) + "\n\n- files: " + ", ".join(data["files"]), data, as_json)
 
 
 @hyp_app.command("conclude")
