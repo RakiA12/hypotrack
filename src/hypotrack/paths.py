@@ -60,6 +60,10 @@ class Paths:
     def skill(self) -> Path:
         return self.root / ".claude" / "skills" / "hypotrack" / "SKILL.md"
 
+    @property
+    def claude_settings(self) -> Path:
+        return self.root / ".claude" / "settings.json"
+
     def exp_dir(self, exp_id: str) -> Path:
         return self.experiments / exp_id
 

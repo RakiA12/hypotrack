@@ -23,7 +23,7 @@ Every command prints Markdown by default and JSON with `--json`. Paths it prints
 | Create a hypothesis | `hypx hyp new --parent H1 --title "..." [--body "statement"]` (body also via stdin) |
 | Create an experiment (draft) | `hypx exp new --hyp H1.1.2 --title "..." --body "why we run this"` |
 | Submit to the cluster | `hypx run exp-014 -- bash scripts/submit.sh -m model.dropout=0.1,0.2` |
-| Sync job states | `hypx status [exp-014]` |
+| Sync job states | `hypx status [exp-014]` (no accounting on the cluster: `--backend squeue`; a job gone from the queue becomes `FINISHED`, check its log and `--mark <job>=FAILED` if it crashed) |
 | Fetch results back | `hypx pull [exp-014] [--include-logs] [--tail 200] [--all-completed]` |
 | Read metrics | `hypx results exp-014 [--metric val_loss --best min] [--last] [--at-step N] [--raw]` |
 | Everything about one experiment | `hypx show exp-014` |
@@ -63,6 +63,7 @@ dropout 0.2 lowers val_loss; 0.3 underfits
 
 ## Boundaries
 
+- All cluster access goes through `hypx`. Never run `ssh`, `scp`, `sftp` or `rsync` against the cluster yourself; if `hypx` cannot do something, say so instead of working around it.
 - Files under `.exps/` may be edited directly, except the `code`, `submit` and `runs` sections of an experiment's entry in `.exps/experiments.yaml`, which only `hypx` writes.
 - A hypothesis is an entry in `.exps/hypotheses.yaml` (keyed by id: parent, title, status, dates, evidence) plus `.exps/hypotheses/H1.1.md` (`## Statement`, `## Rationale`, `## Conclusion`, plus any sections you add). Title and status are authoritative in the YAML; the `# H1.1: ...` line of the `.md` is regenerated from it. `hypx hyp show H1.1` returns one entry without reading the whole file. Edit the `.md` body freely; `hypx hyp conclude --body` rewrites only the Conclusion section.
 - Experiments attach to leaf hypotheses only. Siblings share a parent; that parent is the relation between them.

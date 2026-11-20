@@ -12,8 +12,14 @@ HYP_STATUSES = ("open", "supported", "refuted", "inconclusive", "abandoned")
 EXP_STATUSES = ("draft", "submitted", "running", "completed", "failed", "partial", "cancelled")
 
 # Slurm states that mean the job will not change any more.
+# Not a Slurm state: `hypx status --backend squeue` records it when a submitted job is no longer
+# listed by squeue. The job has finished, but without accounting its exit status is unknown.
+FINISHED = "FINISHED"
+# Run states counted as a success when deriving the experiment status.
+OK_STATES = {"COMPLETED", FINISHED}
 TERMINAL_STATES = {
     "COMPLETED",
+    FINISHED,
     "FAILED",
     "CANCELLED",
     "TIMEOUT",
@@ -265,7 +271,7 @@ class Run:
 
     @property
     def is_failed(self) -> bool:
-        return self.state is not None and self.state in TERMINAL_STATES and self.state != "COMPLETED"
+        return self.state is not None and self.state in TERMINAL_STATES and self.state not in OK_STATES
 
 
 @dataclass
@@ -347,10 +353,10 @@ class Experiment:
         if not all(s is not None and s in TERMINAL_STATES for s in states):
             # unknown or still queued (PENDING etc.)
             return "submitted"
-        if all(s == "COMPLETED" for s in states):
+        if all(s in OK_STATES for s in states):
             return "completed"
         if all(s == "CANCELLED" for s in states):
             return "cancelled"
-        if any(s == "COMPLETED" for s in states):
+        if any(s in OK_STATES for s in states):
             return "partial"
         return "failed"

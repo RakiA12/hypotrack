@@ -2,6 +2,15 @@ from hypotrack import slurm
 from hypotrack.overrides import config_name_from, extract_overrides, override_diff, varying_and_fixed
 
 
+def test_parse_squeue_rows_and_array_tasks():
+    infos = slurm.parse_squeue("1001|RUNNING\n55_0|PENDING\n55_1|RUNNING\n\n")
+    assert set(infos) == {"1001", "55_0", "55_1"}
+    assert infos["1001"].state == "RUNNING" and infos["1001"].exit_code is None
+    assert slurm.lookup(infos, "55").state == "RUNNING"
+    assert slurm.lookup(infos, "1002") is None
+    assert slurm.parse_squeue("") == {}
+
+
 def test_parse_job_ids_all_and_dedup():
     text = "some output\nSubmitted batch job 123\nnoise\nSubmitted batch job 124\nSubmitted batch job 123\n"
     assert slurm.parse_job_ids(text) == ["123", "124"]

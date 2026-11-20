@@ -7,6 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from hypotrack.cli import app, main
+from hypotrack.errors import HypxError
 
 runner = CliRunner()
 
@@ -33,6 +34,8 @@ def test_full_local_cycle(in_repo, tmp_path, monkeypatch):
     assert "cluster_host" in toml
 
     assert "## Experiments (hypotrack)" in run("init", "--claude-md").output
+    settings = json.loads((in_repo / ".claude" / "settings.json").read_text())
+    assert settings["permissions"]["deny"] == ["Bash(ssh:*)", "Bash(scp:*)", "Bash(sftp:*)", "Bash(rsync:*)"]
 
     r = run("hyp", "new", "--title", "root", "--body", "root statement")
     assert "created H1" in r.output
@@ -113,3 +116,61 @@ def test_missing_body_does_not_hang_without_tty(repo):
     )
     assert proc.returncode == 0, proc.stderr
     assert "created exp-001" in proc.stdout
+
+
+def test_init_merges_deny_into_existing_claude_settings(in_repo):
+    settings = in_repo / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"permissions": {"allow": ["Bash(uv:*)"], "deny": ["Bash(ssh:*)"]}, "model": "x"}))
+    r = run("init", "--no-register")
+    assert r.exit_code == 0, r.output
+    assert "added Bash(scp:*)" in r.output
+    data = json.loads(settings.read_text())
+    assert data["model"] == "x"
+    assert data["permissions"]["allow"] == ["Bash(uv:*)"]
+    assert data["permissions"]["deny"] == ["Bash(ssh:*)", "Bash(scp:*)", "Bash(sftp:*)", "Bash(rsync:*)"]
+    # idempotent: a second init changes nothing
+    before = settings.read_text()
+    run("init", "--no-register")
+    assert settings.read_text() == before
+
+
+def test_init_leaves_non_list_deny_alone(in_repo):
+    settings = in_repo / ".claude" / "settings.json"
+    settings.parent.mkdir(parents=True)
+    settings.write_text(json.dumps({"permissions": {"deny": "Bash(ssh:*)"}}))
+    r = run("init", "--no-register")
+    assert r.exit_code == 0, r.output
+    assert "permissions.deny is not a list" in r.output
+    assert json.loads(settings.read_text()) == {"permissions": {"deny": "Bash(ssh:*)"}}
+
+
+def test_status_backend_and_mark_options(in_repo, cluster):
+    run("init", "--cluster-host", "hpc", "--remote-repo", "~/proj/repo", "--no-register")
+    run("hyp", "new", "--title", "root", "--body", "root statement")
+    run("hyp", "new", "--parent", "H1", "--title", "leaf", "--body", "leaf statement")
+    run("exp", "new", "--hyp", "H1.1", "--title", "sweep", "--body", "intent")
+    r = run("run", "exp-001", "--", "bash", "scripts/submit.sh")
+    assert r.exit_code == 0, r.output
+
+    cluster.squeue_text = "1001|RUNNING\n"
+    r = run("status", "--backend", "squeue")
+    assert r.exit_code == 0, r.output
+    assert cluster.ssh_calls[-1].startswith("squeue ")
+    assert "running" in r.output
+
+    calls = len(cluster.ssh_calls)
+    r = run("status", "exp-001", "--mark", "1001=completed", "--mark", "1002=FAILED")
+    assert r.exit_code == 0, r.output
+    assert len(cluster.ssh_calls) == calls
+    assert "partial" in r.output
+
+    with pytest.raises(HypxError, match="unknown Slurm state"):
+        run("status", "exp-001", "--mark", "1001=DONE")
+
+    # the config default applies without --backend
+    cfg = in_repo / ".exps" / "config.yaml"
+    cfg.write_text(cfg.read_text().replace("status_backend: sacct", "status_backend: squeue"))
+    r = run("status", "exp-001")
+    assert r.exit_code == 0, r.output
+    assert cluster.ssh_calls[-1].startswith("squeue ")

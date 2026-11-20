@@ -74,6 +74,8 @@ class FakeCluster:
     submit_stdout: str = "Submitted batch job 1001\nSubmitted batch job 1002\n"
     submit_rc: int = 0
     sacct_text: str = ""
+    sacct_disabled: bool = False  # cluster without accounting storage
+    squeue_text: str = ""
     run_dirs: list[str] = field(default_factory=list)
     files: dict[str, str] = field(default_factory=dict)  # relative to output dir -> content
     log_files: dict[str, str] = field(default_factory=dict)  # basename -> content
@@ -89,7 +91,14 @@ class FakeCluster:
                 raise remote.RemoteError(res.stderr)
             return res
         if command.startswith("sacct"):
+            if self.sacct_disabled:
+                res = CmdResult(1, "", "Slurm accounting storage is disabled")
+                if check:
+                    raise remote.RemoteError(f"ssh {host} failed (rc=1): {res.stderr}")
+                return res
             return CmdResult(0, self.sacct_text, "")
+        if command.startswith("squeue"):
+            return CmdResult(0, self.squeue_text, "")
         if command.startswith("scancel"):
             return CmdResult(0, "", "")
         if "find ." in command:

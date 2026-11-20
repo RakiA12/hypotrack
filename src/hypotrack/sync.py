@@ -9,7 +9,7 @@ from pathlib import Path
 from . import gitops, metrics, slurm
 from .config import Config
 from .errors import HypxError
-from .models import TERMINAL_STATES, Experiment, Run, now_iso
+from .models import ACTIVE_STATES, FINISHED, QUEUED_STATES, TERMINAL_STATES, Experiment, Run, now_iso
 from .overrides import read_run_overrides
 from .paths import Paths
 from .remote import Remote
@@ -17,6 +17,7 @@ from .runner import shell_path
 from .store import Store
 
 WANDB_URL_RE = re.compile(r"https://wandb\.ai/[\w\-./]+/runs/[\w\-]+")
+KNOWN_STATES = TERMINAL_STATES | ACTIVE_STATES | QUEUED_STATES
 
 
 # ----------------------------------------------------------------------------- status
@@ -29,7 +30,38 @@ class StatusChange:
     after: str
 
 
-def sync_status(store: Store, cfg: Config, remote: Remote, exp_ids: list[str] | None = None) -> list[StatusChange]:
+def parse_marks(items: list[str]) -> dict[str, str]:
+    """`JOB=STATE` arguments of `hypx status --mark` -> {job_id: STATE} (validated, upper-cased)."""
+    marks: dict[str, str] = {}
+    for item in items:
+        job_id, sep, state = item.partition("=")
+        job_id, state = job_id.strip(), state.strip().upper()
+        if not sep or not job_id or not state:
+            raise HypxError(f"--mark expects JOB=STATE, got {item!r}")
+        if state not in KNOWN_STATES:
+            raise HypxError(
+                f"--mark {item!r}: unknown Slurm state {state!r}; expected one of {', '.join(sorted(KNOWN_STATES))}"
+            )
+        marks[job_id] = state
+    return marks
+
+
+def sync_status(
+    store: Store,
+    cfg: Config,
+    remote: Remote,
+    exp_ids: list[str] | None = None,
+    *,
+    backend: str | None = None,
+    marks: dict[str, str] | None = None,
+) -> list[StatusChange]:
+    """Refresh runs[].state and derive each experiment's status.
+
+    States come from the cluster through `backend` (`cfg.status_backend` by default). `squeue` lists
+    queued and running jobs only, so a submitted job it no longer shows has finished: its runs are
+    recorded as FINISHED (exit status unknown). With `marks` nothing is polled: the given
+    `{job_id: STATE}` are written as-is, e.g. to turn such a FINISHED run into FAILED.
+    """
     if exp_ids:
         targets = [store.get_experiment(e) for e in exp_ids]
     else:
@@ -37,7 +69,21 @@ def sync_status(store: Store, cfg: Config, remote: Remote, exp_ids: list[str] | 
     job_ids: list[str] = []
     for e in targets:
         job_ids.extend(j for j in e.job_ids if j not in job_ids)
-    infos = slurm.query_sacct(remote, job_ids) if job_ids else {}
+
+    chosen: str | None = None
+    if marks:
+        if backend:
+            raise HypxError("--mark records states by hand; it cannot be combined with --backend")
+        # an array task (55_0) belongs to the experiment that holds its array job (55)
+        unknown = sorted(j for j in marks if j not in job_ids and j.split("_", 1)[0] not in job_ids)
+        if unknown:
+            raise HypxError(f"--mark: job id(s) {', '.join(unknown)} belong to none of the targeted experiments")
+        infos = {j: slurm.JobInfo(job_id=j, state=s) for j, s in marks.items()}
+    else:
+        chosen = backend or cfg.status_backend
+        if chosen not in slurm.STATUS_BACKENDS:
+            raise HypxError(f"status backend {chosen!r} is not one of {', '.join(slurm.STATUS_BACKENDS)}")
+        infos = slurm.query_states(remote, job_ids, chosen) if job_ids else {}
 
     changes: list[StatusChange] = []
     for exp in targets:
@@ -50,10 +96,15 @@ def sync_status(store: Store, cfg: Config, remote: Remote, exp_ids: list[str] | 
                 continue
             info = slurm.lookup(infos, run.job_id)
             if info is None:
+                # squeue only knows jobs still in the controller: a submitted job that is gone has ended
+                if chosen == "squeue" and run.state not in TERMINAL_STATES:
+                    run.state = FINISHED
+                    run.exit_code = None
                 continue
             run.state = info.state
-            run.exit_code = info.exit_code
-            run.elapsed = info.elapsed
+            if not marks:  # a manual mark carries no exit code or elapsed time; keep what is known
+                run.exit_code = info.exit_code
+                run.elapsed = info.elapsed
         exp.status = exp.derive_status()
         store.save_experiment(exp)
         changes.append(StatusChange(exp, before, exp.status))

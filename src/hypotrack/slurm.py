@@ -1,4 +1,4 @@
-"""Slurm glue: job id capture from sbatch output, sacct parsing, scancel."""
+"""Slurm glue: job id capture from sbatch output, sacct / squeue parsing, scancel."""
 
 from __future__ import annotations
 
@@ -6,11 +6,19 @@ import re
 import shlex
 from dataclasses import dataclass
 
-from .models import ACTIVE_STATES, TERMINAL_STATES
+from .errors import HypxError, RemoteError
+from .models import ACTIVE_STATES, OK_STATES, TERMINAL_STATES
 from .remote import Remote
 
 JOB_RE = re.compile(r"Submitted batch job (\d+)")
 SACCT_FORMAT = "JobID,State,ExitCode,Elapsed"
+SQUEUE_FORMAT = "%i|%T"
+STATUS_BACKENDS = ("sacct", "squeue")
+NO_ACCOUNTING_HINT = (
+    "Accounting is disabled on this cluster: use `hypx status --backend squeue` (a job that has left "
+    "the queue is recorded as FINISHED; fix its outcome with `hypx status --mark JOB=STATE` if needed)."
+)
+NO_ACCOUNTING_RE = re.compile(r"accounting storage is disabled", re.IGNORECASE)
 
 
 def parse_job_ids(text: str) -> list[str]:
@@ -73,13 +81,13 @@ def lookup(infos: dict[str, JobInfo], job_id: str) -> JobInfo | None:
         state = "RUNNING"
     elif not all(s in TERMINAL_STATES for s in states):
         state = "PENDING"
-    elif all(s == "COMPLETED" for s in states):
+    elif all(s in OK_STATES for s in states):
         state = "COMPLETED"
     elif all(s == "CANCELLED" for s in states):
         state = "CANCELLED"
     else:
         state = "FAILED"
-    bad = [t for t in tasks if t.state != "COMPLETED" and t.exit_code]
+    bad = [t for t in tasks if t.state not in OK_STATES and t.exit_code]
     exit_code = bad[0].exit_code if bad else (tasks[0].exit_code if tasks else None)
     return JobInfo(job_id=job_id, state=state, exit_code=exit_code, elapsed=None)
 
@@ -88,8 +96,53 @@ def query_sacct(remote: Remote, job_ids: list[str]) -> dict[str, JobInfo]:
     if not job_ids:
         return {}
     cmd = f"sacct -j {','.join(job_ids)} --format={SACCT_FORMAT} --parsable2 --noheader"
-    res = remote.ssh(cmd)
+    try:
+        res = remote.ssh(cmd)
+    except RemoteError as exc:
+        if NO_ACCOUNTING_RE.search(str(exc)):
+            raise HypxError(f"sacct failed: {exc}. {NO_ACCOUNTING_HINT}") from exc
+        raise
     return parse_sacct(res.stdout)
+
+
+def parse_squeue(text: str) -> dict[str, JobInfo]:
+    """Parse `squeue -r -h -o '%i|%T'` output: one `job_id|STATE` row per job or array task.
+
+    Only jobs still known to the controller appear, so a finished job is simply absent.
+    """
+    infos: dict[str, JobInfo] = {}
+    for line in (text or "").splitlines():
+        parts = line.strip().split("|")
+        if len(parts) < 2 or not parts[0].strip():
+            continue
+        job_id = parts[0].strip()
+        infos[job_id] = JobInfo(job_id=job_id, state=normalize_state(parts[1]))
+    return infos
+
+
+def query_squeue(remote: Remote, job_ids: list[str]) -> dict[str, JobInfo]:
+    """States of the queued/running jobs among `job_ids` (no accounting needed).
+
+    The user's whole queue is listed and filtered here: `squeue -j` fails outright when any of the
+    ids has already left the controller, which is exactly the common case after a job finishes.
+    """
+    if not job_ids:
+        return {}
+    res = remote.ssh(f"squeue -u \"$USER\" -r -h -o '{SQUEUE_FORMAT}'")
+    wanted = set(job_ids)
+    return {
+        j: info
+        for j, info in parse_squeue(res.stdout).items()
+        if j in wanted or j.split("_", 1)[0] in wanted
+    }
+
+
+def query_states(remote: Remote, job_ids: list[str], backend: str) -> dict[str, JobInfo]:
+    if backend == "sacct":
+        return query_sacct(remote, job_ids)
+    if backend == "squeue":
+        return query_squeue(remote, job_ids)
+    raise HypxError(f"unknown status backend {backend!r}; expected one of {', '.join(STATUS_BACKENDS)}")
 
 
 def scancel(remote: Remote, job_ids: list[str]) -> None:

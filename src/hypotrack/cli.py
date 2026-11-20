@@ -295,14 +295,31 @@ def run(
 @app.command()
 def status(
     exp_id: str | None = typer.Argument(None, help="Experiment id; default: every submitted/running experiment."),
+    backend: str | None = typer.Option(
+        None,
+        "--backend",
+        help="sacct (default; config status_backend) or squeue (no accounting: a job gone from the queue is FINISHED).",
+    ),
+    mark: list[str] = typer.Option(
+        [],
+        "--mark",
+        help="JOB=STATE, e.g. 2801=FAILED. Records the state without polling the cluster (not with --backend). Repeatable.",
+    ),
     as_json: bool = JsonOpt,
 ) -> None:
-    """Sync run states from sacct and derive each experiment's status."""
+    """Sync run states from sacct (or squeue / --mark) and derive each experiment's status."""
     from .render import md_table
-    from .sync import sync_status
+    from .sync import parse_marks, sync_status
 
     c = load_ctx()
-    changes = sync_status(c.store, c.cfg, _remote(c.cfg), [exp_id] if exp_id else None)
+    changes = sync_status(
+        c.store,
+        c.cfg,
+        _remote(c.cfg),
+        [exp_id] if exp_id else None,
+        backend=backend,
+        marks=parse_marks(mark) if mark else None,
+    )
     if not changes:
         emit("(no submitted or running experiments)", [], as_json)
         return

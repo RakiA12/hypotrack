@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -12,6 +13,8 @@ from .errors import HypxError
 from .paths import EXPS_DIR, Paths, git_root
 
 GITIGNORE_LINES = ["results/", "index.sqlite", "*.sqlite.tmp", "hypotrack.log", "submit.log"]
+# Claude Code permission rules: agents reach the cluster only through hypx, never with ssh directly.
+AGENT_DENY = ["Bash(ssh:*)", "Bash(scp:*)", "Bash(sftp:*)", "Bash(rsync:*)"]
 
 
 def template(name: str) -> str:
@@ -25,6 +28,38 @@ def claude_md_snippet() -> str:
 def _parent_dir(remote_path: str) -> str:
     p = remote_path.rstrip("/")
     return p.rsplit("/", 1)[0] if "/" in p else "."
+
+
+def _merge_agent_deny(paths: Paths, result: "InitResult") -> None:
+    """Add AGENT_DENY to permissions.deny of .claude/settings.json, keeping everything else as is."""
+    settings = paths.claude_settings
+    rel = paths.rel(settings)
+    data: dict = {}
+    if settings.exists():
+        try:
+            data = json.loads(settings.read_text(encoding="utf-8"))
+        except ValueError:
+            result.notes.append(f"{rel} is not valid JSON; add {', '.join(AGENT_DENY)} to permissions.deny yourself")
+            return
+        if not isinstance(data, dict):
+            result.notes.append(f"{rel} is not a JSON object; left untouched")
+            return
+    perms = data.setdefault("permissions", {})
+    if not isinstance(perms, dict) or not isinstance(perms.setdefault("deny", []), list):
+        result.notes.append(f"{rel}: permissions.deny is not a list; add {', '.join(AGENT_DENY)} to it yourself")
+        return
+    deny = perms["deny"]
+    missing = [rule for rule in AGENT_DENY if rule not in deny]
+    if not missing:
+        return
+    deny.extend(missing)
+    existed = settings.exists()
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if existed:
+        result.notes.append(f"added {', '.join(missing)} to permissions.deny in {rel} (file re-indented)")
+    else:
+        result.created.append(rel)
 
 
 @dataclass
@@ -96,6 +131,8 @@ def init_project(
         skill.parent.mkdir(parents=True, exist_ok=True)
         skill.write_text(skill_text, encoding="utf-8")
         result.created.append(paths.rel(skill))
+
+    _merge_agent_deny(paths, result)
 
     if cfg.cluster_host and cfg.remote_repo:
         url = cfg.remote_url()

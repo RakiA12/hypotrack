@@ -1,6 +1,6 @@
 import pytest
 
-from hypotrack.errors import HypxError
+from hypotrack.errors import HypxError, RemoteError
 from hypotrack.models import Run
 from hypotrack.runner import run_experiment
 from hypotrack.sync import cancel_experiment, pull_experiment, reconcile_runs, sync_status
@@ -14,6 +14,76 @@ def _submitted(project, leaf, cluster):
     s.new_experiment(leaf, "sweep", "intent")
     run_experiment(s, project.cfg, project.paths, "exp-001", CMD)
     return s.get_experiment("exp-001")
+
+
+def test_status_without_accounting_uses_squeue_and_marks(project, leaf, cluster, remote_obj):
+    _submitted(project, leaf, cluster)
+    s = project.store
+    cluster.sacct_disabled = True
+
+    # the default backend fails with a pointer to the fallbacks
+    with pytest.raises(HypxError, match="--backend squeue"):
+        sync_status(s, project.cfg, remote_obj, None)
+
+    # squeue lists the whole queue; our running job is seen, the one that is gone has finished
+    cluster.squeue_text = "1001|RUNNING\n9999|PENDING\n"
+    [ch] = sync_status(s, project.cfg, remote_obj, None, backend="squeue")
+    assert cluster.ssh_calls[-1] == "squeue -u \"$USER\" -r -h -o '%i|%T'"
+    assert (ch.before, ch.after) == ("submitted", "running")
+    exp = s.get_experiment("exp-001")
+    assert [r.state for r in exp.runs] == ["RUNNING", "FINISHED"]
+    assert not exp.runs[1].is_failed
+
+    # both gone: the experiment is completed (exit status unknown)
+    cluster.squeue_text = "9999|PENDING\n"
+    [ch] = sync_status(s, project.cfg, remote_obj, None, backend="squeue")
+    assert (ch.before, ch.after) == ("running", "completed")
+    assert [r.state for r in s.get_experiment("exp-001").runs] == ["FINISHED", "FINISHED"]
+
+    # the outcome is corrected by hand without touching the cluster
+    calls = len(cluster.ssh_calls)
+    [ch] = sync_status(s, project.cfg, remote_obj, ["exp-001"], marks={"1001": "COMPLETED", "1002": "FAILED"})
+    assert len(cluster.ssh_calls) == calls
+    assert ch.after == "partial"
+    exp = s.get_experiment("exp-001")
+    assert [r.state for r in exp.runs] == ["COMPLETED", "FAILED"]
+
+    with pytest.raises(HypxError, match="belong to none"):
+        sync_status(s, project.cfg, remote_obj, ["exp-001"], marks={"4242": "COMPLETED"})
+    with pytest.raises(HypxError, match="not one of"):
+        sync_status(s, project.cfg, remote_obj, ["exp-001"], backend="scontrol")
+    with pytest.raises(HypxError, match="cannot be combined"):
+        sync_status(s, project.cfg, remote_obj, ["exp-001"], backend="squeue", marks={"1001": "COMPLETED"})
+
+    # an array task id is accepted for an experiment that holds the array job
+    [ch] = sync_status(s, project.cfg, remote_obj, ["exp-001"], marks={"1001_0": "COMPLETED"})
+    assert ch.after == "partial"
+
+    # the config default is honoured when no backend is given
+    project.cfg.status_backend = "squeue"
+    cluster.squeue_text = ""
+    sync_status(s, project.cfg, remote_obj, ["exp-001"])
+    assert cluster.ssh_calls[-1].startswith("squeue ")
+    # a run already in a terminal state (marked FAILED) is not overwritten by FINISHED
+    assert [r.state for r in s.get_experiment("exp-001").runs] == ["COMPLETED", "FAILED"]
+
+
+def test_sacct_hint_only_when_accounting_is_disabled(project, leaf, cluster, remote_obj):
+    _submitted(project, leaf, cluster)
+    cluster.fail_ssh = True
+    with pytest.raises(RemoteError, match="Connection refused") as exc_info:
+        sync_status(project.store, project.cfg, remote_obj, None)
+    assert "--backend squeue" not in str(exc_info.value)
+
+
+def test_parse_marks_validates_shape_and_state():
+    from hypotrack.sync import parse_marks
+
+    assert parse_marks(["1001=completed", "55_1=FAILED"]) == {"1001": "COMPLETED", "55_1": "FAILED"}
+    with pytest.raises(HypxError, match="JOB=STATE"):
+        parse_marks(["1001"])
+    with pytest.raises(HypxError, match="unknown Slurm state"):
+        parse_marks(["1001=DONE"])
 
 
 def test_status_derives_completed_partial_failed(project, leaf, cluster, remote_obj):

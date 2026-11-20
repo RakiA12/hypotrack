@@ -40,7 +40,11 @@ This creates:
 | `.exps/experiments.yaml` | metadata of every experiment in one file, keyed by id: hypothesis, title, status, code, submit, runs, summary |
 | `.exps/experiments/exp-NNN/` | `notes.md` (humans and agents), `submit.log`, `results/` (pulled, gitignored) |
 | `.claude/skills/hypotrack/SKILL.md` | the Claude Code skill explaining the workflow |
+| `.claude/settings.json` | `permissions.deny` for `ssh` / `scp` / `sftp` / `rsync` (merged into an existing file), so agents reach the cluster only through `hypx` |
 | git remote `cluster` | `ssh://hpc/~/proj/repo`, receives `refs/exps/*` |
+
+The deny rules are Claude Code's Bash pattern matching: they keep agents on the `hypx` path but are
+not a cluster-side defence, and `hypx` itself still uses your own ssh key and config.
 
 Defaults derived from `--remote-repo ~/proj/repo`: worktrees in `~/proj/.exp-work/<exp-id>`,
 Hydra outputs in `~/proj/outputs/<exp-id>`. Override with `--work-root` / `--output-root` or edit
@@ -63,6 +67,11 @@ hydra:
 Also make sure your submit script passes the environment to `sbatch` (`--export=ALL`, or
 `export EXP_ID` inside the script) and that its stdout contains Slurm's `Submitted batch job N`
 lines (one per job; all are captured).
+
+Note that the submit command runs inside the per-experiment worktree (`work_root/<exp-id>`), so a
+relative `outputs/` lands there, while `hypx pull` reads `output_root/<exp-id>`. Either make the
+Hydra directory absolute (`${oc.env:HYPX_OUTPUT_ROOT}/...`), or have the submit script symlink the
+worktree's `outputs/` to `output_root/<exp-id>` before calling `sbatch`.
 
 ## Daily loop
 
@@ -100,10 +109,18 @@ Reproduce or compare later with plain git: `git worktree add /tmp/exp-014 refs/e
 
 ## Status model
 
-`status` is derived from `runs[].state` after `hypx status`: all `COMPLETED` → `completed`;
+`status` is derived from `runs[].state` after `hypx status`: all `COMPLETED` (or `FINISHED`) → `completed`;
 some `COMPLETED`, some failed → `partial`; none completed → `failed`; anything `RUNNING` →
 `running`; `hypx cancel` → `cancelled`. `pull` works for `partial` and `failed` too and fetches
 the failed runs' Slurm logs (all runs with `--include-logs`, last N lines with `--tail N`).
+
+States come from `sacct` by default (`status_backend: sacct` in `config.yaml`). On a cluster without
+accounting storage (`sacct` answers "Slurm accounting storage is disabled"), `hypx status --backend
+squeue` reads the queue instead. `squeue` lists queued and running jobs only, so a submitted job that
+no longer appears has finished: its runs are recorded as `FINISHED` (counts as a success for the
+experiment status, but the exit code is unknown, so check the logs). Correct a run by hand with
+`hypx status --mark 2801=FAILED` (repeatable, no cluster access; any Slurm state name is accepted).
+Set `status_backend: squeue` to make that the default.
 
 ## Development
 

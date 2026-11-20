@@ -34,6 +34,9 @@ class Config:
     pull_exclude: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDES))
     # Pattern of the Slurm stdout file relative to the submit cwd. {job_id} is substituted.
     slurm_log_pattern: str = "slurm-{job_id}.out"
+    # How `hypx status` reads job states: "sacct" (accounting; sees finished jobs) or
+    # "squeue" (no accounting; a job no longer listed is recorded as FINISHED, exit status unknown).
+    status_backend: str = "sacct"
     auto_commit: bool = False
 
     @classmethod
